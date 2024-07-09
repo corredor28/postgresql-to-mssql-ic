@@ -54,6 +54,7 @@ internal class Service : IService
                     RemoveUnnecessarySchemas(schemas);
 
                     ctx.Status("Looping through available schemas...");
+                    
                     foreach (var sourceSchema in schemas)
                     {
                         string destinationSchema = $"{sourceSchema}_new";
@@ -62,6 +63,11 @@ internal class Service : IService
                         var createDestinationSchemaQuery = $"CREATE SCHEMA [{destinationSchema}];";
                         sqlServerConnection.Execute(createDestinationSchemaQuery);
                         SpectreConsoleHelper.Log($"Created {destinationSchema} schema in sql server...");
+                    }
+                    
+                    foreach (var sourceSchema in schemas)
+                    {
+                        string destinationSchema = $"{sourceSchema}_new";
 
                         ctx.Status($"Fetching available tables from {sourceSchema} schema...");
                         var getTablesQuery = $"SELECT table_name FROM information_schema.tables WHERE table_schema = '{sourceSchema}'";
@@ -72,17 +78,62 @@ internal class Service : IService
                         foreach (var table in tables)
                         {
                             ctx.Status($"Fetching column definition for {table} table...");
-                            var getColumnsQuery = $"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table}' AND table_schema = '{sourceSchema}'";
+                            var getColumnsQuery = $@"SELECT c.column_name, c.data_type, c.is_nullable, c.is_identity, c.identity_start, c.identity_increment, ccu.constraint_name
+                                                        FROM information_schema.columns c
+                                                        LEFT JOIN information_schema.table_constraints tc
+                                                            ON tc.constraint_schema = c.table_schema AND tc.table_name = c.table_name AND constraint_type = 'PRIMARY KEY'
+                                                        LEFT JOIN information_schema.constraint_column_usage ccu
+                                                            ON tc.constraint_schema = ccu.table_schema AND tc.table_name = ccu.table_name AND c.column_name = ccu.column_name AND tc.constraint_name = ccu.constraint_name
+                                                        WHERE c.table_name = '{table}' AND c.table_schema = '{sourceSchema}'";
                             var columns = postgresConnection.Query(getColumnsQuery);
                             SpectreConsoleHelper.Log($"Fetched column definition for {table} table...");
 
                             ctx.Status($"Creating table {destinationSchema}.{table} in sql server...");
                             var createTableQuery = $"CREATE TABLE {destinationSchema}.{table} (";
-                            createTableQuery += string.Join(", ", columns.Select(column => $"[{column.column_name}] {ConvertPostgreSqlToSqlServerDataType(column.data_type)}"));
+                            createTableQuery += string.Join(", ", columns.Select(column => $@"
+                                                                    [{column.column_name}] 
+                                                                    {ConvertPostgreSqlToSqlServerDataType(column.data_type)} 
+                                                                    {(column.is_nullable == "YES" ? "NULL" : "NOT NULL")} 
+                                                                    {(column.constraint_name != null ? "PRIMARY KEY" : string.Empty)} 
+                                                                    {(column.is_identity == "YES" ? $"IDENTITY({column.identity_start}, {column.identity_increment})" : string.Empty)} 
+                                                                    "));
                             createTableQuery += ")";
                             sqlServerConnection.Execute(createTableQuery);
                             SpectreConsoleHelper.Log($"Created table {destinationSchema}.{table} in sql server...");
+                        }
 
+                        ctx.Status($"Adding foreign keys...");
+                        foreach (var table in tables)
+                        {
+                            // Add foreign keys
+                            ctx.Status($"Fetching foreign keys for {table} table...");
+                            var getForeignKeysQuery = $@"SELECT
+                                                            tc.constraint_name,
+                                                            kcu.column_name,
+                                                            ccu.table_name AS foreign_table_name,
+                                                            ccu.column_name AS foreign_column_name
+                                                        FROM
+                                                            information_schema.table_constraints AS tc
+                                                            JOIN information_schema.key_column_usage AS kcu
+                                                            ON tc.constraint_name = kcu.constraint_name
+                                                            JOIN information_schema.constraint_column_usage AS ccu
+                                                            ON ccu.constraint_name = tc.constraint_name
+                                                        WHERE constraint_type = 'FOREIGN KEY' AND tc.table_name='{table}' AND tc.table_schema = '{sourceSchema}';";
+                            var foreignKeys = postgresConnection.Query(getForeignKeysQuery);
+                            foreach (var fk in foreignKeys)
+                            {
+                                var addForeignKeyQuery = $@"ALTER TABLE {destinationSchema}.{table}
+                                                            ADD CONSTRAINT {fk.constraint_name}
+                                                            FOREIGN KEY ([{fk.column_name}])
+                                                            REFERENCES {destinationSchema}.{fk.foreign_table_name}([{fk.foreign_column_name}])";
+                                sqlServerConnection.Execute(addForeignKeyQuery);
+                                SpectreConsoleHelper.Log($"Added foreign key {fk.constraint_name} to {destinationSchema}.{table} in sql server...");
+                            }
+                        }
+
+                        foreach (var table in tables)
+                        {
+                            // Insert data
                             IDataReader data;
                             try
                             {
@@ -198,6 +249,7 @@ internal class Service : IService
             { "array", "nvarchar(max)" },
             { "domain", "nvarchar(max)" },
             { "timestamp with time zone", "datetimeoffset" },
+            { "timestamp without time zone", "datetime2" },
         };
 
         return map.TryGetValue(postgresDataType.ToLower(), out string? value) ? value.ToUpper() : "nvarchar(max)".ToUpper();
