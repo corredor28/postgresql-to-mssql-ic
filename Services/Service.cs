@@ -78,12 +78,8 @@ internal class Service : IService
                         foreach (var table in tables)
                         {
                             ctx.Status($"Fetching column definition for {table} table...");
-                            var getColumnsQuery = $@"SELECT c.column_name, c.data_type, c.is_nullable, c.is_identity, c.identity_start, c.identity_increment, ccu.constraint_name
+                            var getColumnsQuery = $@"SELECT c.column_name, c.data_type, c.is_nullable, c.is_identity, c.identity_start, c.identity_increment
                                                         FROM information_schema.columns c
-                                                        LEFT JOIN information_schema.table_constraints tc
-                                                            ON tc.constraint_schema = c.table_schema AND tc.table_name = c.table_name AND constraint_type = 'PRIMARY KEY'
-                                                        LEFT JOIN information_schema.constraint_column_usage ccu
-                                                            ON tc.constraint_schema = ccu.table_schema AND tc.table_name = ccu.table_name AND c.column_name = ccu.column_name AND tc.constraint_name = ccu.constraint_name
                                                         WHERE c.table_name = '{table}' AND c.table_schema = '{sourceSchema}'";
                             var columns = postgresConnection.Query(getColumnsQuery);
                             SpectreConsoleHelper.Log($"Fetched column definition for {table} table...");
@@ -94,7 +90,6 @@ internal class Service : IService
                                                                     [{column.column_name}] 
                                                                     {ConvertPostgreSqlToSqlServerDataType(column.data_type)} 
                                                                     {(column.is_nullable == "YES" ? "NULL" : "NOT NULL")} 
-                                                                    {(column.constraint_name != null ? "PRIMARY KEY" : string.Empty)} 
                                                                     {(column.is_identity == "YES" ? $"IDENTITY({column.identity_start}, {column.identity_increment})" : string.Empty)} 
                                                                     "));
                             createTableQuery += ")";
@@ -102,6 +97,30 @@ internal class Service : IService
                             SpectreConsoleHelper.Log($"Created table {destinationSchema}.{table} in sql server...");
                         }
 
+                        ctx.Status($"Adding primary keys...");
+                        foreach (var table in tables)
+                        {
+                            // Add primary keys
+                            ctx.Status($"Fetching primary keys for {table} table...");
+                            var getPrimaryKeysQuery = $@"SELECT
+                                                            tc.constraint_name,
+                                                            kcu.column_name
+                                                        FROM
+                                                            information_schema.table_constraints AS tc
+                                                            JOIN information_schema.key_column_usage AS kcu
+                                                            ON tc.constraint_name = kcu.constraint_name
+                                                        WHERE constraint_type = 'PRIMARY KEY' AND tc.table_name='{table}' AND tc.table_schema = '{sourceSchema}';";
+                            var primaryKeys = postgresConnection.Query(getPrimaryKeysQuery);
+                            foreach (var pk in primaryKeys)
+                            {
+                                var addPrimaryKeyQuery = $@"ALTER TABLE {destinationSchema}.{table}
+                                                            ADD CONSTRAINT {pk.constraint_name}
+                                                            PRIMARY KEY ([{pk.column_name}])";
+                                sqlServerConnection.Execute(addPrimaryKeyQuery);
+                                SpectreConsoleHelper.Log($"Added primary key {pk.constraint_name} to {destinationSchema}.{table} in sql server...");
+                            }
+                        }
+                        
                         ctx.Status($"Adding foreign keys...");
                         foreach (var table in tables)
                         {
