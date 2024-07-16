@@ -55,7 +55,7 @@ internal class Service : IService
 
                     ctx.Status("Looping through available schemas...");
                     
-                    foreach (var sourceSchema in schemas)
+                    /*foreach (var sourceSchema in schemas)
                     {
                         string destinationSchema = $"{sourceSchema}_new";
 
@@ -63,11 +63,11 @@ internal class Service : IService
                         var createDestinationSchemaQuery = $"CREATE SCHEMA [{destinationSchema}];";
                         sqlServerConnection.Execute(createDestinationSchemaQuery);
                         SpectreConsoleHelper.Log($"Created {destinationSchema} schema in sql server...");
-                    }
+                    }*/
                     
                     foreach (var sourceSchema in schemas)
                     {
-                        string destinationSchema = $"{sourceSchema}_new";
+                        string destinationSchema = "dbo"; //$"{sourceSchema}_new";
 
                         ctx.Status($"Fetching available tables from {sourceSchema} schema...");
                         var getTablesQuery = $"SELECT table_name FROM information_schema.tables WHERE table_schema = '{sourceSchema}'";
