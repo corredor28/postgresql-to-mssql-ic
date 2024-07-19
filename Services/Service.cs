@@ -166,7 +166,7 @@ internal class Service : IService
                                 SpectreConsoleHelper.Log("Converted data into proper shape...");
 
                                 ctx.Status($"Transferring data from [blue]{sourceSchema}.{table}[/] to [green]{destinationSchema}.{table}[/]");
-                                using var bulkCopy = new SqlBulkCopy(sqlServerConnection);
+                                using var bulkCopy = new SqlBulkCopy(sqlServerConnection, SqlBulkCopyOptions.KeepIdentity, null);
                                 bulkCopy.DestinationTableName = $"{destinationSchema}.{table}";
                                 bulkCopy.BulkCopyTimeout = 300;
                                 bulkCopy.WriteToServer(dataTable);
